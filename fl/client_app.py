@@ -7,7 +7,7 @@ from flwr.clientapp import ClientApp
 # from fl.task import Net, load_data
 # from models import RTDETR_L as Net
 from models import RTDETR_L_WithAttention as Net
-from fl.task import get_model_record
+from fl.task import get_model_record, DATASET_CONFIGS, CURRENT_DATASET
 
 from fl.task import load_data
 
@@ -22,8 +22,11 @@ app = ClientApp()
 def train(msg: Message, context: Context):
     """Train the model on local data."""
 
+    # Get the correct number of classes for the current dataset
+    nc = DATASET_CONFIGS[CURRENT_DATASET]["nc"]
+
     # Load the model and initialize it with the received weights
-    model = Net()
+    model = Net(nc=nc)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -31,15 +34,18 @@ def train(msg: Message, context: Context):
     # Load the data
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    trainloader, _ = load_data(partition_id, num_partitions)
+    # [修改] load_data 现在返回 trainloader, testloader, nc
+    trainloader, _, nc_data = load_data(partition_id, num_partitions)
 
     # Call the training function
+    # [修改] 传入 nc 参数
     train_loss = train_fn(
         model,
         trainloader,
         context.run_config["local-epochs"],
         msg.content["config"]["lr"],
         device,
+        nc=nc,  # [新增] 传入类别数
     )
 
     # Construct and return reply Message
@@ -60,8 +66,11 @@ def train(msg: Message, context: Context):
 def evaluate(msg: Message, context: Context):
     """Evaluate the model on local data."""
 
+    # Get the correct number of classes for the current dataset
+    nc = DATASET_CONFIGS[CURRENT_DATASET]["nc"]
+
     # Load the model and initialize it with the received weights
-    model = Net()
+    model = Net(nc=nc)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -69,13 +78,16 @@ def evaluate(msg: Message, context: Context):
     # Load the data
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    _, valloader = load_data(partition_id, num_partitions)
+    # [修改] load_data 现在返回 trainloader, testloader, nc
+    _, valloader, nc_data = load_data(partition_id, num_partitions)
 
     # Call the evaluation function
+    # [修改] 传入 nc 参数
     eval_loss, eval_map50, eval_precision, eval_recall, eval_f1, _ = test_fn(
         model,
         valloader,
         device,
+        nc=nc,  # [新增] 传入类别数
     )
 
     # Construct and return reply Message

@@ -33,10 +33,10 @@ clientapp = "fl.client_app:app"
 
 # Custom config values accessible via `context.run_config`
 [tool.flwr.app.config]
-num-server-rounds = 1
+num-server-rounds = 50
 fraction-train = 0.1
 local-epochs = 5
-lr = 0.000000000000001
+lr = 0.0001
 
 # Default federation to use when running the app
 [tool.flwr.federations]

@@ -11,8 +11,7 @@ from models import RTDETR_L_WithAttention as Net
 pretrained_model_path = "/root/fl/models/YOLO/rtdetr-l.pt"
 # pretrained_model_path = "/root/fl/final_model_pretrained.pt"
 # pretrained_model_path = "/root/fl/Results/ultralytics/runs/detect/ODDNet-voc2007-125-2/weights/best.pt"
-from fl.task import load_rtdetr_weights
-from fl.task import get_model_record
+from fl.task import load_rtdetr_weights, get_model_record, DATASET_CONFIGS, CURRENT_DATASET
 
 # Create ServerApp
 app = ServerApp()
@@ -27,8 +26,11 @@ def main(grid: Grid, context: Context) -> None:
     num_rounds: int = context.run_config["num-server-rounds"]
     lr: float = context.run_config["lr"]
 
-    # Load global model
-    global_model = Net()
+    # Get the correct number of classes for the current dataset
+    nc = DATASET_CONFIGS[CURRENT_DATASET]["nc"]
+
+    # Load global model with correct nc
+    global_model = Net(nc=nc)
     global_model = load_rtdetr_weights(global_model, pretrained_model_path)
 
     freeze_layers = range(10)  # 对应 Backbone (HGStem 到 Stage 4)
@@ -48,12 +50,13 @@ def main(grid: Grid, context: Context) -> None:
     # for param in global_model.model[28].parameters():
     #     param.requires_grad = True
 
-    # arrays = get_model_record(global_model)
-    arrays = ArrayRecord(global_model.state_dict())
+    arrays = get_model_record(global_model)
+    # arrays = ArrayRecord(global_model.state_dict())
 
     # Initialize FedAvg strategy
-    strategy = FedAvg(fraction_train=fraction_train)
-    # strategy = FedYogi(fraction_train=fraction_train)
+    
+    # strategy = FedAvg(fraction_train=fraction_train)
+    strategy = FedYogi(fraction_train=fraction_train)
 
     # Start strategy, run FedAvg for `num_rounds`
     result = strategy.start(

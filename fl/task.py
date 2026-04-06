@@ -1,7 +1,53 @@
 """FL: A Flower / PyTorch app."""
 
 import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1' 
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
+# ============================================================================
+# [新增] 医疗数据集配置字典
+# 使用方法: 修改 CURRENT_DATASET 变量来选择要运行的数据集
+# ============================================================================
+DATASET_CONFIGS = {
+    # 原有数据集配置 (保留)
+    "voc2007": {
+        "name": "VOC2007",
+        "nc": 20,  # VOC数据集类别数
+        "train_loader": "/root/fl/datasets/coco8/coco8_load_train.py",
+        "test_loader": "/root/fl/datasets/coco8/coco8_load_test.py",
+        "data_dir": "/root/autodl-tmp/local",
+    },
+    
+    # [新增] COVID-19 肺部检测数据集
+    "covid19_lung_detect": {
+        "name": "COVID-19 Lung Detection",
+        "nc": 2,  # 类别: Right Lung, Left Lung
+        "train_loader": "/root/fl/datasets/medical_data/covid19_lung_detect/load_train.py",
+        "test_loader": "/root/fl/datasets/medical_data/covid19_lung_detect/load_test.py",
+        "data_dir": "/root/fl/datasets/medical_data/covid19_lung_detect",
+    },
+    
+    # [新增] Hyper-Kvasir 息肉检测数据集
+    "hyper_kvasir_polyp_detect": {
+        "name": "Hyper-Kvasir Polyp Detection",
+        "nc": 1,  # 类别: polyp
+        "train_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect/load_train.py",
+        "test_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect/load_test.py",
+        "data_dir": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect",
+    },
+    
+    # [新增] Hyper-Kvasir 息肉分割数据集
+    "hyper_kvasir_polyp_segment": {
+        "name": "Hyper-Kvasir Polyp Segmentation",
+        "nc": 1,  # 类别: polyp
+        "train_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment/load_train.py",
+        "test_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment/load_test.py",
+        "data_dir": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment",
+    },
+}
+
+# [新增] 当前使用的数据集 - 修改此变量切换数据集
+# 可选值: "voc2007", "covid19_lung_detect", "hyper_kvasir_polyp_detect", "hyper_kvasir_polyp_segment"
+CURRENT_DATASET = "hyper_kvasir_polyp_detect"
 
 import torch
 import torch.nn as nn
@@ -31,7 +77,7 @@ from flwr.common.logger import log, configure
 
 configure(
     identifier="task",
-    filename="logs/test_custom.log"
+    filename="logs/test_medical.log"
     # filename="logs/ODDnet_fedYogi_alpha=0.5_voc_data_Yogilr_e-4.log"
     # filename = f"logs/task_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 )
@@ -317,19 +363,30 @@ def apply_transforms(batch):
 fds_train, fds_test = None, None
 
 def load_data(partition_id: int, num_partitions: int):
+    """
+    加载分区数据。
+    [修改] 使用 DATASET_CONFIGS 配置字典动态选择数据集
+    """
     global fds_train, fds_test
+    
+    # [新增] 从配置字典获取当前数据集配置
+    config = DATASET_CONFIGS[CURRENT_DATASET]
+    nc = config["nc"]  # 类别数，供 train/test 函数使用
+    
     if fds_train is None or fds_test is None:
         partitioner = IidPartitioner(num_partitions=num_partitions)
+        
+        # [修改] 使用配置字典中的路径
         fds_train = FederatedDataset(
-            dataset="/root/fl/datasets/coco8/coco8_load_train.py",
+            dataset=config["train_loader"],
             partitioners={"train": partitioner},
-            data_dir="/root/autodl-tmp/local",
+            data_dir=config["data_dir"],
             trust_remote_code=True,
         )
         fds_test = FederatedDataset(
-            dataset="/root/fl/datasets/coco8/coco8_load_test.py",
+            dataset=config["test_loader"],
             partitioners={"test": partitioner},
-            data_dir="/root/autodl-tmp/local",
+            data_dir=config["data_dir"],
             trust_remote_code=True,
         )
 
@@ -342,25 +399,33 @@ def load_data(partition_id: int, num_partitions: int):
 
     trainloader = DataLoader(partition_train, batch_size=4, shuffle=True, collate_fn=rtdetr_collate_fn)
     testloader = DataLoader(partition_test, batch_size=4, shuffle=False, collate_fn=rtdetr_collate_fn)
-    return trainloader, testloader
+    
+    # [新增] 返回类别数，供 train/test 函数使用
+    return trainloader, testloader, nc
 
 from .myutils import visualize_batch
 
-def train(net, trainloader, epochs, lr, device):
+def train(net, trainloader, epochs, lr, device, nc=None):
     """
     Train the model on the training set using RT-DETR loss.
     Returns: avg_trainloss (float)
+    
+    [新增] nc 参数: 类别数，如果不传则从配置字典获取
     """
     net.train()
     
+    # [新增] 获取类别数
+    if nc is None:
+        nc = DATASET_CONFIGS[CURRENT_DATASET]["nc"]
+
     # 同时使用VFL和EQLv2
     criterion = RTDETRDetectionLoss(
-        nc=20, 
+        nc=nc,  # [修改] 使用传入或配置的类别数
         use_vfl=True,       # 保持VFL
         use_eqlv2=True,     # 同时启用EQLv2
         loss_gain = {
             "class": 0.5,
-            "eqlv2": 0.5,      
+            "eqlv2": 0.5,
             "bbox": 5.0,
             "giou": 2.0,
             "no_object": 0.1,
@@ -368,7 +433,7 @@ def train(net, trainloader, epochs, lr, device):
             "dice": 1.0,
         },
         gamma=1.5,
-        alpha=0.25, 
+        alpha=0.25,
         eql_gamma=12.0,
         eql_mu=0.8,
         eql_alpha=4.0,
@@ -539,19 +604,25 @@ def train(net, trainloader, epochs, lr, device):
 #     # 这里的 map50_95 替代了原本的 accuracy
 #     return avg_loss, map50
 
-def test(net, testloader, device):
+def test(net, testloader, device, nc=None):
     """
         Validate the model.
-        自动寻找最佳 F1 阈值。  
-        Returns: 
-            loss (float), map50 (float), 
-            best_precision (float), best_recall (float), 
+        自动寻找最佳 F1 阈值。
+        Returns:
+            loss (float), map50 (float),
+            best_precision (float), best_recall (float),
             best_f1 (float), best_threshold (float)
+        
+        [新增] nc 参数: 类别数，如果不传则从配置字典获取
     """
     net.to(device)
     net.eval()
     
-    criterion = RTDETRDetectionLoss(nc=20, use_vfl=True).to(device)
+    # [新增] 获取类别数
+    if nc is None:
+        nc = DATASET_CONFIGS[CURRENT_DATASET]["nc"]
+
+    criterion = RTDETRDetectionLoss(nc=nc, use_vfl=True).to(device)  # [修改] 使用传入或配置的类别数
     metric = MeanAveragePrecision(box_format="cxcywh", iou_type="bbox").to(device)
     
     total_loss = 0.0
