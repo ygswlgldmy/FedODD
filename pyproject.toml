@@ -34,19 +34,23 @@ clientapp = "fl.client_app:app"
 # Custom config values accessible via `context.run_config`
 [tool.flwr.app.config]
 num-server-rounds = 50
-fraction-train = 0.1
-local-epochs = 5
+fraction-train = 1.0   # 5个客户端全参与；0.1时每轮只有1个客户端，退化成顺序训练
+local-epochs = 3       # RT-DETR每轮本地epoch不宜过多，防止客户端漂移
 lr = 0.0001
 
 # Default federation to use when running the app
 [tool.flwr.federations]
 default = "local-simulation"
 
-# Local simulation federation with 10 virtual SuperNodes
+# Local simulation federation with 5 virtual SuperNodes
+# num-gpus 控制并发数：并发数 = floor(1.0 / num-gpus)
+#   0.25 → 4并发（RT-DETR-L大概率OOM）
+#   0.5  → 2并发（显存充裕时用）
+#   1.0  → 1并发（严格顺序，最省显存，5个客户端依次跑）
 [tool.flwr.federations.local-simulation]
 options.num-supernodes = 5
-options.backend.client-resources.num-cpus = 2 # each ClientApp assumes to use 1 CPU (default is 2)
-options.backend.client-resources.num-gpus = 0.25 # each ClientApp uses 25% of VRAM (default is 0.0)
+options.backend.client-resources.num-cpus = 2
+options.backend.client-resources.num-gpus = 1.0  # 顺序执行，每次只有1个client占用GPU
 
 # Remote federation example for use with SuperLink
 [tool.flwr.federations.remote-federation]

@@ -11,36 +11,40 @@ DATASET_CONFIGS = {
     # 原有数据集配置 (保留)
     "voc2007": {
         "name": "VOC2007",
-        "nc": 20,  # VOC数据集类别数
+        "nc": 20,
         "train_loader": "/root/fl/datasets/coco8/coco8_load_train.py",
-        "test_loader": "/root/fl/datasets/coco8/coco8_load_test.py",
+        "val_loader":   "/root/fl/datasets/coco8/coco8_load_val.py",
+        "test_loader":  "/root/fl/datasets/coco8/coco8_load_test.py",
         "data_dir": "/root/autodl-tmp/local",
     },
-    
-    # [新增] COVID-19 肺部检测数据集
+
+    # COVID-19 肺部检测数据集
     "covid19_lung_detect": {
         "name": "COVID-19 Lung Detection",
         "nc": 2,  # 类别: Right Lung, Left Lung
         "train_loader": "/root/fl/datasets/medical_data/covid19_lung_detect/load_train.py",
-        "test_loader": "/root/fl/datasets/medical_data/covid19_lung_detect/load_test.py",
+        "val_loader":   "/root/fl/datasets/medical_data/covid19_lung_detect/load_val.py",
+        "test_loader":  "/root/fl/datasets/medical_data/covid19_lung_detect/load_test.py",
         "data_dir": "/root/fl/datasets/medical_data/covid19_lung_detect",
     },
-    
-    # [新增] Hyper-Kvasir 息肉检测数据集
+
+    # Hyper-Kvasir 息肉检测数据集
     "hyper_kvasir_polyp_detect": {
         "name": "Hyper-Kvasir Polyp Detection",
         "nc": 1,  # 类别: polyp
         "train_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect/load_train.py",
-        "test_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect/load_test.py",
+        "val_loader":   "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect/load_val.py",
+        "test_loader":  "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect/load_test.py",
         "data_dir": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_detect",
     },
-    
-    # [新增] Hyper-Kvasir 息肉分割数据集
+
+    # Hyper-Kvasir 息肉分割数据集
     "hyper_kvasir_polyp_segment": {
         "name": "Hyper-Kvasir Polyp Segmentation",
         "nc": 1,  # 类别: polyp
         "train_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment/load_train.py",
-        "test_loader": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment/load_test.py",
+        "val_loader":   "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment/load_val.py",
+        "test_loader":  "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment/load_test.py",
         "data_dir": "/root/fl/datasets/medical_data/hyper_kvasir_polyp_segment",
     },
 }
@@ -73,6 +77,7 @@ import torch
 from torchvision.ops import box_iou, box_convert
 from datetime import datetime
 
+import logging
 from flwr.common.logger import log, configure
 
 configure(
@@ -359,49 +364,61 @@ def apply_transforms(batch):
 #     )
 #     return trainloader, testloader
 
-# 缓存对象
-fds_train, fds_test = None, None
+# 缓存对象（train / val / test 各自独立）
+fds_train, fds_val, fds_test = None, None, None
 
 def load_data(partition_id: int, num_partitions: int):
     """
     加载分区数据。
-    [修改] 使用 DATASET_CONFIGS 配置字典动态选择数据集
+    train / val / test 各自来自独立的 FederatedDataset，不做二次切分。
+    返回 (trainloader, valloader, testloader, nc)
     """
-    global fds_train, fds_test
-    
-    # [新增] 从配置字典获取当前数据集配置
+    global fds_train, fds_val, fds_test
+
     config = DATASET_CONFIGS[CURRENT_DATASET]
-    nc = config["nc"]  # 类别数，供 train/test 函数使用
-    
-    if fds_train is None or fds_test is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        
-        # [修改] 使用配置字典中的路径
+    nc = config["nc"]
+
+    if fds_train is None or fds_val is None or fds_test is None:
+        partitioner_train = IidPartitioner(num_partitions=num_partitions)
+        partitioner_val   = IidPartitioner(num_partitions=num_partitions)
+        partitioner_test  = IidPartitioner(num_partitions=num_partitions)
+
         fds_train = FederatedDataset(
             dataset=config["train_loader"],
-            partitioners={"train": partitioner},
+            partitioners={"train": partitioner_train},
+            data_dir=config["data_dir"],
+            trust_remote_code=True,
+        )
+        fds_val = FederatedDataset(
+            dataset=config["val_loader"],
+            partitioners={"val": partitioner_val},
             data_dir=config["data_dir"],
             trust_remote_code=True,
         )
         fds_test = FederatedDataset(
             dataset=config["test_loader"],
-            partitioners={"test": partitioner},
+            partitioners={"test": partitioner_test},
             data_dir=config["data_dir"],
             trust_remote_code=True,
         )
 
-    # 显式指定 split，避免默认走第一个分区器
     partition_train = fds_train.load_partition(partition_id, split="train")
-    partition_test = fds_test.load_partition(partition_id, split="test")
+    partition_val   = fds_val.load_partition(partition_id, split="val")
+    partition_test  = fds_test.load_partition(partition_id, split="test")
 
     partition_train = partition_train.with_transform(apply_transforms)
-    partition_test = partition_test.with_transform(apply_transforms)
+    partition_val   = partition_val.with_transform(apply_transforms)
+    partition_test  = partition_test.with_transform(apply_transforms)
 
-    trainloader = DataLoader(partition_train, batch_size=4, shuffle=True, collate_fn=rtdetr_collate_fn)
-    testloader = DataLoader(partition_test, batch_size=4, shuffle=False, collate_fn=rtdetr_collate_fn)
-    
-    # [新增] 返回类别数，供 train/test 函数使用
-    return trainloader, testloader, nc
+    trainloader = DataLoader(partition_train, batch_size=4, shuffle=True,  collate_fn=rtdetr_collate_fn)
+    valloader   = DataLoader(partition_val,   batch_size=4, shuffle=False, collate_fn=rtdetr_collate_fn)
+    testloader  = DataLoader(partition_test,  batch_size=4, shuffle=False, collate_fn=rtdetr_collate_fn)
+
+    log(logging.INFO,
+        f"[Client {partition_id}] Dataset sizes — "
+        f"train: {len(partition_train)}, val: {len(partition_val)}, test: {len(partition_test)}")
+
+    return trainloader, valloader, testloader, nc
 
 from .myutils import visualize_batch
 
@@ -439,11 +456,10 @@ def train(net, trainloader, epochs, lr, device, nc=None):
         eql_alpha=4.0,
     ).to(device)
     
-    # 最佳实践：RT-DETR 推荐使用 AdamW 和 weight decay
-    # optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=0.0001)
     optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, net.parameters()), 
-        lr=0.0001
+        filter(lambda p: p.requires_grad, net.parameters()),
+        lr=lr,
+        weight_decay=0.0001,
     )
     
     total_loss = 0.0
@@ -604,7 +620,7 @@ def train(net, trainloader, epochs, lr, device, nc=None):
 #     # 这里的 map50_95 替代了原本的 accuracy
 #     return avg_loss, map50
 
-def test(net, testloader, device, nc=None):
+def test(net, testloader, device, nc=None, client_id=None, split_name="val"):
     """
         Validate the model.
         自动寻找最佳 F1 阈值。
@@ -612,15 +628,26 @@ def test(net, testloader, device, nc=None):
             loss (float), map50 (float),
             best_precision (float), best_recall (float),
             best_f1 (float), best_threshold (float)
-        
+
         [新增] nc 参数: 类别数，如果不传则从配置字典获取
+        [新增] client_id, split_name: 用于诊断日志
     """
     net.to(device)
     net.eval()
-    
+
     # [新增] 获取类别数
     if nc is None:
         nc = DATASET_CONFIGS[CURRENT_DATASET]["nc"]
+
+    # --- 诊断：统计 val/test 集基本信息 ---
+    total_images = len(testloader.dataset) if hasattr(testloader, 'dataset') else -1
+    log(logging.INFO,
+        f"[Client {client_id}] [{split_name}] 开始评估 — 图片总数: {total_images}, nc={nc}")
+
+    if total_images == 0:
+        log(logging.WARNING,
+            f"[Client {client_id}] [{split_name}] 评估集为空，跳过，返回 0.0")
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     criterion = RTDETRDetectionLoss(nc=nc, use_vfl=True).to(device)  # [修改] 使用传入或配置的类别数
     metric = MeanAveragePrecision(box_format="cxcywh", iou_type="bbox").to(device)
@@ -742,11 +769,24 @@ def test(net, testloader, device, nc=None):
             metric.update(pred_list, target_list)
 
     # --- Loop 结束，开始计算指标 ---
-    
+
+    # 诊断：GT 总数
+    log(logging.INFO,
+        f"[Client {client_id}] [{split_name}] num_batches={num_batches}, "
+        f"total_gt_boxes={total_gt_count}, total_images={total_images}")
+
     # 1. 计算标准 mAP
     metrics_dict = metric.compute()
-    map50 = metrics_dict['map_50'].item()
+    map50_raw = metrics_dict['map_50'].item()
+    # NaN 保护：torchmetrics 在没有 GT 或没有预测时返回 NaN/-1
+    map50 = map50_raw if (map50_raw == map50_raw and map50_raw >= 0) else 0.0
     avg_loss = total_loss / max(num_batches, 1)
+
+    # NaN 保护：loss 异常检测
+    if avg_loss != avg_loss or avg_loss < 0:
+        log(logging.WARNING,
+            f"[Client {client_id}] [{split_name}] avg_loss={avg_loss} 异常，强制置 0.0")
+        avg_loss = 0.0
 
     # 2. 计算最佳 F1 及其对应的 P, R, Threshold
     if len(pred_stats) > 0:
@@ -787,8 +827,14 @@ def test(net, testloader, device, nc=None):
         # 防止验证集为空或没有预测框的极端情况
         best_f1, best_precision, best_recall, best_threshold = 0.0, 0.0, 0.0, 0.0
 
-    print(f"Best F1: {best_f1:.4f} @ Threshold: {best_threshold:.4f} (P={best_precision:.4f}, R={best_recall:.4f})")
-    
+    log(logging.INFO,
+        f"[Client {client_id}] [{split_name}] RESULT — "
+        f"loss={avg_loss:.4f}, map50={map50:.4f}, "
+        f"P={best_precision:.4f}, R={best_recall:.4f}, F1={best_f1:.4f}, "
+        f"thr={best_threshold:.4f}, gt_boxes={total_gt_count}")
+    print(f"[Client {client_id}] [{split_name}] Best F1: {best_f1:.4f} @ Threshold: {best_threshold:.4f} "
+          f"(P={best_precision:.4f}, R={best_recall:.4f}, map50={map50:.4f}, loss={avg_loss:.4f})")
+
     return avg_loss, map50, best_precision, best_recall, best_f1, best_threshold
 
 

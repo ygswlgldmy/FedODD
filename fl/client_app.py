@@ -34,18 +34,17 @@ def train(msg: Message, context: Context):
     # Load the data
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    # [修改] load_data 现在返回 trainloader, testloader, nc
-    trainloader, _, nc_data = load_data(partition_id, num_partitions)
+    # load_data 返回 trainloader, valloader, testloader, nc
+    trainloader, _, _, nc_data = load_data(partition_id, num_partitions)
 
     # Call the training function
-    # [修改] 传入 nc 参数
     train_loss = train_fn(
         model,
         trainloader,
         context.run_config["local-epochs"],
         msg.content["config"]["lr"],
         device,
-        nc=nc,  # [新增] 传入类别数
+        nc=nc,
     )
 
     # Construct and return reply Message
@@ -78,25 +77,30 @@ def evaluate(msg: Message, context: Context):
     # Load the data
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
-    # [修改] load_data 现在返回 trainloader, testloader, nc
-    _, valloader, nc_data = load_data(partition_id, num_partitions)
+    # load_data 返回 trainloader, valloader, testloader, nc
+    _, valloader, _, nc_data = load_data(partition_id, num_partitions)
 
-    # Call the evaluation function
-    # [修改] 传入 nc 参数
+    # Call the evaluation function — 用 val 集，传入 client_id 便于诊断
     eval_loss, eval_map50, eval_precision, eval_recall, eval_f1, _ = test_fn(
         model,
         valloader,
         device,
-        nc=nc,  # [新增] 传入类别数
+        nc=nc,
+        client_id=partition_id,
+        split_name="val",
     )
+
+    # NaN 保护：确保上报的 metrics 都是有效 float
+    def safe(v):
+        return float(v) if (v == v and v >= 0) else 0.0
 
     # Construct and return reply Message
     metrics = {
-        "eval_loss": eval_loss,
-        "eval_map50": eval_map50,
-        "eval_precision": eval_precision,
-        "eval_recall": eval_recall,
-        "eval_f1": eval_f1,
+        "eval_loss": safe(eval_loss),
+        "eval_map50": safe(eval_map50),
+        "eval_precision": safe(eval_precision),
+        "eval_recall": safe(eval_recall),
+        "eval_f1": safe(eval_f1),
         "num-examples": len(valloader.dataset),
     }
     metric_record = MetricRecord(metrics)
