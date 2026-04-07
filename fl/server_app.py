@@ -11,7 +11,14 @@ from models import RTDETR_L_WithAttention as Net
 pretrained_model_path = "/root/fl/models/YOLO/rtdetr-l.pt"
 # pretrained_model_path = "/root/fl/final_model_pretrained.pt"
 # pretrained_model_path = "/root/fl/Results/ultralytics/runs/detect/ODDNet-voc2007-125-2/weights/best.pt"
-from fl.task import load_rtdetr_weights, get_model_record, DATASET_CONFIGS, CURRENT_DATASET
+from fl.task import (
+    load_rtdetr_weights,
+    get_federated_model_record,
+    load_federated_model_record,
+    describe_fedbn_layout,
+    DATASET_CONFIGS,
+    CURRENT_DATASET,
+)
 
 # Create ServerApp
 app = ServerApp()
@@ -50,8 +57,13 @@ def main(grid: Grid, context: Context) -> None:
     # for param in global_model.model[28].parameters():
     #     param.requires_grad = True
 
-    arrays = get_model_record(global_model)
+    arrays = get_federated_model_record(global_model)
     # arrays = ArrayRecord(global_model.state_dict())
+
+    print(
+        "FedBN server init: "
+        f"{describe_fedbn_layout(global_model)}"
+    )
 
     # Initialize FedAvg strategy
     
@@ -74,5 +86,7 @@ def main(grid: Grid, context: Context) -> None:
 
     # Save final model to disk
     print("\nSaving final model to disk...")
-    state_dict = result.arrays.to_torch_state_dict()
-    torch.save(state_dict, "final_model.pt")
+    final_model = Net(nc=nc)
+    final_model = load_rtdetr_weights(final_model, pretrained_model_path)
+    load_federated_model_record(final_model, result.arrays)
+    torch.save(final_model.state_dict(), "final_model.pt")

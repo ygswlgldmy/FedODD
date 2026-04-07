@@ -65,6 +65,7 @@ import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
 import numpy as np
+import random
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
@@ -108,28 +109,128 @@ LOSS_KWARGS = {
     "eql_alpha": 4.0,
 }
 
-def get_model_record(model):
-    """
-    统一的转换函数：将模型转为 ArrayRecord，并强制修复标量形状。
-    用于：
-    1. ServerApp 初始化 Strategy
-    2. ClientApp 返回参数
-    """
-    state_dict = model.state_dict()
-    input_data_for_record = {}
+LOCAL_STATE_CACHE = {}
 
-    for name, param in state_dict.items():
-        # 转为 numpy
-        arr = param.detach().cpu().numpy()
-        
-        # [核心修复] 强制升维标量
-        if arr.ndim == 0:
-            arr = arr.reshape(1)
-            
-        # 封装为 Array
-        input_data_for_record[name] = Array(arr)
+def _array_from_tensor(tensor):
+    """Convert a tensor to Flower Array while normalizing scalar shapes."""
+    arr = tensor.detach().cpu().numpy()
+    if arr.ndim == 0:
+        arr = arr.reshape(1)
+    return Array(arr)
+
+
+def get_bn_layer_prefixes(model):
+    """Return module-name prefixes for all BatchNorm layers."""
+    prefixes = set()
+    for module_name, module in model.named_modules():
+        if isinstance(module, nn.modules.batchnorm._BatchNorm):
+            prefixes.add(module_name)
+    return prefixes
+
+
+def get_federated_param_names(model):
+    """Return trainable parameter names excluding all BatchNorm params."""
+    bn_prefixes = get_bn_layer_prefixes(model)
+    federated_names = []
+    for name, _ in model.named_parameters():
+        module_name = name.rsplit(".", 1)[0] if "." in name else ""
+        if module_name in bn_prefixes:
+            continue
+        federated_names.append(name)
+    return federated_names
+
+
+def get_local_state_names(model):
+    """Return state_dict names kept local under FedBN."""
+    federated_names = set(get_federated_param_names(model))
+    return [name for name in model.state_dict().keys() if name not in federated_names]
+
+
+def describe_fedbn_layout(model, max_items=5):
+    """Return a short human-readable FedBN layout summary."""
+    federated_names = get_federated_param_names(model)
+    local_names = get_local_state_names(model)
+    return (
+        f"federated_params={len(federated_names)} "
+        f"sample={federated_names[:max_items]}, "
+        f"local_state={len(local_names)} "
+        f"sample={local_names[:max_items]}"
+    )
+
+
+def get_federated_model_record(model):
+    """Serialize only non-BN trainable parameters for federated optimization."""
+    input_data_for_record = {}
+    params = dict(model.named_parameters())
+    for name in get_federated_param_names(model):
+        input_data_for_record[name] = _array_from_tensor(params[name])
 
     return ArrayRecord(input_data_for_record)
+
+
+def load_federated_model_record(model, record):
+    """Load only federated non-BN parameters from ArrayRecord into model."""
+    param_dict = dict(model.named_parameters())
+    for name, array in record.items():
+        if name not in param_dict:
+            raise KeyError(f"Federated parameter '{name}' not found in model")
+        tensor = torch.from_numpy(array.numpy())
+        target = param_dict[name]
+        if tensor.ndim == 1 and tensor.numel() == 1 and target.ndim == 0:
+            tensor = tensor.reshape(())
+        tensor = tensor.to(device=target.device, dtype=target.dtype)
+        target.data.copy_(tensor)
+
+
+def get_local_state_dict(model):
+    """Capture BN params/buffers and all other non-federated state."""
+    state_dict = model.state_dict()
+    return {
+        name: state_dict[name].detach().cpu().clone()
+        for name in get_local_state_names(model)
+    }
+
+
+def load_local_state_dict(model, local_state):
+    """Restore BN-local state into model without touching federated params."""
+    state_dict = model.state_dict()
+    for name, tensor in local_state.items():
+        if name not in state_dict:
+            raise KeyError(f"Local state '{name}' not found in model")
+        target = state_dict[name]
+        src = tensor
+        if src.ndim == 1 and src.numel() == 1 and target.ndim == 0:
+            src = src.reshape(())
+        src = src.to(device=target.device, dtype=target.dtype)
+        target.copy_(src)
+
+
+def restore_client_local_state(model, client_id):
+    """Restore cached client-local FedBN state if available."""
+    local_state = LOCAL_STATE_CACHE.get(client_id)
+    if local_state is None:
+        log(
+            logging.INFO,
+            f"[Client {client_id}] No cached FedBN local state found; using model defaults",
+        )
+        return False
+    load_local_state_dict(model, local_state)
+    log(
+        logging.INFO,
+        f"[Client {client_id}] Restored FedBN local state with {len(local_state)} tensors",
+    )
+    return True
+
+
+def cache_client_local_state(model, client_id):
+    """Persist client-local FedBN state in-process for future rounds."""
+    local_state = get_local_state_dict(model)
+    LOCAL_STATE_CACHE[client_id] = local_state
+    log(
+        logging.INFO,
+        f"[Client {client_id}] Cached FedBN local state with {len(local_state)} tensors",
+    )
+    return local_state
 
 import torch
 
@@ -271,7 +372,7 @@ fds = None  # Cache FederatedDataset
 # Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 pytorch_transforms = A.Compose([
     A.LongestMaxSize(max_size=640),
-    A.PadIfNeeded(min_height=640, min_width=640, border_mode=0, value=(114, 114, 114)),
+    A.PadIfNeeded(min_height=640, min_width=640, border_mode=0, fill=(114, 114, 114)),
     A.Normalize(mean=(0,0,0), std=(1,1,1)), # 相当于 / 255.0
     ToTensorV2()
 ], bbox_params=A.BboxParams(format='yolo', min_visibility=0.1))
@@ -404,15 +505,20 @@ def load_data(partition_id: int, num_partitions: int):
     nc = config["nc"]
 
     if fds_train is None or fds_val is None or fds_test is None:
-        partitioner_train = IidPartitioner(
-            num_partitions=num_partitions, seed=PARTITION_SEED
-        )
-        partitioner_val = IidPartitioner(
-            num_partitions=num_partitions, seed=PARTITION_SEED
-        )
-        partitioner_test = IidPartitioner(
-            num_partitions=num_partitions, seed=PARTITION_SEED
-        )
+        random.seed(PARTITION_SEED)
+        np.random.seed(PARTITION_SEED)
+        torch.manual_seed(PARTITION_SEED)
+        partitioner_train = IidPartitioner(num_partitions=num_partitions)
+
+        random.seed(PARTITION_SEED)
+        np.random.seed(PARTITION_SEED)
+        torch.manual_seed(PARTITION_SEED)
+        partitioner_val = IidPartitioner(num_partitions=num_partitions)
+
+        random.seed(PARTITION_SEED)
+        np.random.seed(PARTITION_SEED)
+        torch.manual_seed(PARTITION_SEED)
+        partitioner_test = IidPartitioner(num_partitions=num_partitions)
 
         fds_train = FederatedDataset(
             dataset=config["train_loader"],
