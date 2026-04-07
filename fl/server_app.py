@@ -56,7 +56,13 @@ def main(grid: Grid, context: Context) -> None:
     # Initialize FedAvg strategy
     
     # strategy = FedAvg(fraction_train=fraction_train)
-    strategy = FedYogi(fraction_train=fraction_train)
+    strategy = FedYogi(
+        fraction_train=fraction_train,
+        eta=1e-3,
+        tau=1e-2,
+        beta_1=0.8,
+        beta_2=0.95,
+    )
 
     # Start strategy, run FedAvg for `num_rounds`
     result = strategy.start(

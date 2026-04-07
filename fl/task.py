@@ -87,6 +87,27 @@ configure(
     # filename = f"logs/task_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 )
 
+PARTITION_SEED = 42
+
+LOSS_KWARGS = {
+    "use_vfl": True,
+    "use_eqlv2": True,
+    "loss_gain": {
+        "class": 0.5,
+        "eqlv2": 0.5,
+        "bbox": 5.0,
+        "giou": 2.0,
+        "no_object": 0.1,
+        "mask": 1.0,
+        "dice": 1.0,
+    },
+    "gamma": 1.5,
+    "alpha": 0.25,
+    "eql_gamma": 12.0,
+    "eql_mu": 0.8,
+    "eql_alpha": 4.0,
+}
+
 def get_model_record(model):
     """
     统一的转换函数：将模型转为 ArrayRecord，并强制修复标量形状。
@@ -111,6 +132,10 @@ def get_model_record(model):
     return ArrayRecord(input_data_for_record)
 
 import torch
+
+def build_detection_loss(nc, device):
+    """Build a shared RT-DETR loss so train/eval stay aligned."""
+    return RTDETRDetectionLoss(nc=nc, **LOSS_KWARGS).to(device)
 
 def load_rtdetr_weights(target_model, weight_path):
     """
@@ -379,9 +404,15 @@ def load_data(partition_id: int, num_partitions: int):
     nc = config["nc"]
 
     if fds_train is None or fds_val is None or fds_test is None:
-        partitioner_train = IidPartitioner(num_partitions=num_partitions)
-        partitioner_val   = IidPartitioner(num_partitions=num_partitions)
-        partitioner_test  = IidPartitioner(num_partitions=num_partitions)
+        partitioner_train = IidPartitioner(
+            num_partitions=num_partitions, seed=PARTITION_SEED
+        )
+        partitioner_val = IidPartitioner(
+            num_partitions=num_partitions, seed=PARTITION_SEED
+        )
+        partitioner_test = IidPartitioner(
+            num_partitions=num_partitions, seed=PARTITION_SEED
+        )
 
         fds_train = FederatedDataset(
             dataset=config["train_loader"],
@@ -435,26 +466,7 @@ def train(net, trainloader, epochs, lr, device, nc=None):
     if nc is None:
         nc = DATASET_CONFIGS[CURRENT_DATASET]["nc"]
 
-    # 同时使用VFL和EQLv2
-    criterion = RTDETRDetectionLoss(
-        nc=nc,  # [修改] 使用传入或配置的类别数
-        use_vfl=True,       # 保持VFL
-        use_eqlv2=True,     # 同时启用EQLv2
-        loss_gain = {
-            "class": 0.5,
-            "eqlv2": 0.5,
-            "bbox": 5.0,
-            "giou": 2.0,
-            "no_object": 0.1,
-            "mask": 1.0,
-            "dice": 1.0,
-        },
-        gamma=1.5,
-        alpha=0.25,
-        eql_gamma=12.0,
-        eql_mu=0.8,
-        eql_alpha=4.0,
-    ).to(device)
+    criterion = build_detection_loss(nc=nc, device=device)
     
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, net.parameters()),
@@ -649,7 +661,7 @@ def test(net, testloader, device, nc=None, client_id=None, split_name="val"):
             f"[Client {client_id}] [{split_name}] 评估集为空，跳过，返回 0.0")
         return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
-    criterion = RTDETRDetectionLoss(nc=nc, use_vfl=True).to(device)  # [修改] 使用传入或配置的类别数
+    criterion = build_detection_loss(nc=nc, device=device)
     metric = MeanAveragePrecision(box_format="cxcywh", iou_type="bbox").to(device)
     
     total_loss = 0.0
