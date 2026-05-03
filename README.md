@@ -1,37 +1,23 @@
-# FL: A Flower / PyTorch app
+# ODDNet Federated Training
 
-## Install dependencies and project
+This repository contains the basic training code for ODDNet, an RT-DETR-based object detection model trained in a federated learning setting with Flower and PyTorch.
 
-The dependencies are listed in the `pyproject.toml` and you can install them as follows:
+## Installation
 
 ```bash
 pip install -e .
 ```
 
-> **Tip:** Your `pyproject.toml` file can define more than just the dependencies of your Flower app. You can also use it to specify hyperparameters for your runs and control which Flower Runtime is used. By default, it uses the Simulation Runtime, but you can switch to the Deployment Runtime when needed.
-> Learn more in the [TOML configuration guide](https://flower.ai/docs/framework/how-to-configure-pyproject-toml.html).
+## Training
 
-## Run with the Simulation Engine
-
-In the `FL` directory, use `flwr run` to run a local simulation:
+Run the default federated training experiment with:
 
 ```bash
 flwr run .
 ```
 
-Refer to the [How to Run Simulations](https://flower.ai/docs/framework/how-to-run-simulations.html) guide in the documentation for advice on how to optimize your simulations.
+The main training entry points are `fl/server_app.py` and `fl/client_app.py`. Basic experiment settings, such as the number of clients, training rounds, learning rate, and local epochs, can be changed in `pyproject.toml`.
 
-## Run with the Deployment Engine
+The active dataset is configured in `fl/task.py` through `CURRENT_DATASET` and `DATASET_CONFIGS`.
 
-Follow this [how-to guide](https://flower.ai/docs/framework/how-to-run-flower-with-deployment-engine.html) to run the same app in this example but with Flower's Deployment Engine. After that, you might be interested in setting up [secure TLS-enabled communications](https://flower.ai/docs/framework/how-to-enable-tls-connections.html) and [SuperNode authentication](https://flower.ai/docs/framework/how-to-authenticate-supernodes.html) in your federation.
-
-You can run Flower on Docker too! Check out the [Flower with Docker](https://flower.ai/docs/framework/docker/index.html) documentation.
-
-## Resources
-
-- Flower website: [flower.ai](https://flower.ai/)
-- Check the documentation: [flower.ai/docs](https://flower.ai/docs/)
-- Give Flower a ⭐️ on GitHub: [GitHub](https://github.com/adap/flower)
-- Join the Flower community!
-  - [Flower Slack](https://flower.ai/join-slack/)
-  - [Flower Discuss](https://discuss.flower.ai/)
+Training outputs are saved under `outputs/`.
