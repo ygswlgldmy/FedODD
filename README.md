@@ -1,6 +1,6 @@
-# ODDNet Federated Training
+# FedODD Federated Training
 
-This repository contains the basic training code for ODDNet, an RT-DETR-based object detection model trained in a federated learning setting with Flower and PyTorch.
+This repository contains the basic training code for FedODD.
 
 ## Installation
 
@@ -21,3 +21,5 @@ The main training entry points are `fl/server_app.py` and `fl/client_app.py`. Ba
 The active dataset is configured in `fl/task.py` through `CURRENT_DATASET` and `DATASET_CONFIGS`.
 
 Training outputs are saved under `outputs/`.
+
+A detailed README file with instructions will be provided upon acceptance of the paper.
